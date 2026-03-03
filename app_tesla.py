@@ -37,8 +37,99 @@ PY_COL = "#79c0ff"
 LOGO_URL = "https://pngimg.com/uploads/tesla_logo/tesla_logo_PNG12.png"
 
 # You can drop in any extra CSS here if you like
-CSS = """
+CSS = f"""
 <style>
+/* Global layout: Tesla-style light surface */
+html, body, [data-testid="stAppViewContainer"] {{
+    background-color: {WHITE} !important;
+    color: {DARK} !important;
+}}
+
+[data-testid="stSidebar"] {{
+    background-color: {OFF_WH} !important;
+    border-right: 1px solid {LIGHT};
+}}
+
+[data-testid="stHeader"] {{
+    background-color: {WHITE} !important;
+    border-bottom: 1px solid {LIGHT};
+}}
+
+/* Typography – closer to tesla.com */
+body, .stMarkdown, .stText, .stCode {{
+    font-family: system-ui, -apple-system, BlinkMacSystemFont,
+                 "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+    color: {DARK};
+}}
+
+h1, h2, h3, h4 {{
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}}
+
+/* Sidebar title */
+.sidebar-title {{
+    font-size: 0.9rem;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: {DARK};
+    margin-bottom: 0.5rem;
+}}
+
+/* Narrative cards */
+.narrative-box {{
+    border-radius: 6px;
+    padding: 0.75rem 0.9rem;
+    background: {OFF_WH};
+    border: 1px solid {LIGHT};
+    font-size: 0.9rem;
+}}
+
+.narrative-box.suggestion {{
+    background: {RED_DIM};
+    border-color: {RED};
+}}
+
+/* Small meta “pills” */
+.meta-pill {{
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.2rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    background: {OFF_WH};
+    border: 1px solid {LIGHT};
+    color: {DARK};
+}}
+
+/* Buttons – red primary like Tesla */
+.stButton button[kind="primary"],
+.stButton button:hover {{
+    background-color: {RED} !important;
+    border-color: {RED_D} !important;
+    color: {WHITE} !important;
+}}
+
+.stButton button:active {{
+    background-color: {RED_D} !important;
+}}
+
+/* Chat input */
+[data-testid="stChatInputTextArea"] textarea {{
+    background-color: {OFF_WH};
+    border-radius: 999px;
+}}
+
+/* Code blocks (SQL / Python) */
+.stCode, .stMarkdown pre code {{
+    background-color: {CODE_BG} !important;
+    color: {SQL_COL} !important;
+    border-radius: 6px;
+    font-size: 0.8rem;
+}}
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
