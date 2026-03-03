@@ -1,6 +1,6 @@
 """Tesla HR Intelligence - Streamlit App
 
-Tesla.com-inspired theme: clean white/black, red accents
+Professional Tesla-inspired theme: clean white/black, red accents.
 Run: streamlit run app_tesla.py
 """
 import os
@@ -21,25 +21,23 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── Tesla.com palette (white-dominant like their actual site) ─────────────────
+# ── Palette ───────────────────────────────────────────────────────────────────
 WHITE = "#FFFFFF"
 OFF_WH = "#f4f4f4"
 LIGHT = "#e8e8e8"
 MID = "#cccccc"
-DARK = "#393c41"  # Tesla dark grey (body text)
+DARK = "#393c41"
 BLACK = "#000000"
-RED = "#E82127"  # Tesla signature red
+RED = "#E82127"
 RED_D = "#b81920"
-RED_DIM = "rgba(232,33,39,0.08)"
+RED_DIM = "rgba(232,33,39,0.06)"
 CODE_BG = "#0d1117"
 SQL_COL = "#8b949e"
 PY_COL = "#79c0ff"
 LOGO_URL = "https://pngimg.com/uploads/tesla_logo/tesla_logo_PNG12.png"
 
-# You can drop in any extra CSS here if you like
 CSS = f"""
 <style>
-/* Global layout: Tesla-style light surface */
 html, body, [data-testid="stAppViewContainer"] {{
     background-color: {WHITE} !important;
     color: {DARK} !important;
@@ -55,92 +53,118 @@ html, body, [data-testid="stAppViewContainer"] {{
     border-bottom: 1px solid {LIGHT};
 }}
 
-/* Typography – closer to tesla.com */
 body, .stMarkdown, .stText, .stCode {{
     font-family: system-ui, -apple-system, BlinkMacSystemFont,
-                 "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+                 "Helvetica Neue", Arial, sans-serif;
     color: {DARK};
+    line-height: 1.55;
 }}
 
 h1, h2, h3, h4 {{
     font-weight: 500;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.06em;
     text-transform: uppercase;
+    color: {BLACK};
 }}
 
-/* Sidebar title */
-.sidebar-title {{
-    font-size: 0.9rem;
+.section-header {{
+    font-size: 0.72rem;
     font-weight: 600;
-    letter-spacing: 0.18em;
+    letter-spacing: 0.16em;
     text-transform: uppercase;
     color: {DARK};
+    margin-top: 1.25rem;
+    margin-bottom: 0.4rem;
+    padding-bottom: 0.3rem;
+    border-bottom: 1px solid {LIGHT};
+}}
+
+.response-card {{
+    border-radius: 4px;
+    padding: 0.75rem 1rem;
+    background: {OFF_WH};
+    border-left: 3px solid {LIGHT};
+    font-size: 0.9rem;
+    line-height: 1.6;
     margin-bottom: 0.5rem;
 }}
 
-/* Narrative cards */
-.narrative-box {{
-    border-radius: 6px;
-    padding: 0.75rem 0.9rem;
+.response-card.has-error {{
+    background: #fef8f8;
+    border-left-color: {RED};
+}}
+
+.user-question {{
+    margin: 0.6rem 0 0.3rem 0;
+    padding: 0.6rem 0.9rem;
+    border-radius: 4px;
     background: {OFF_WH};
-    border: 1px solid {LIGHT};
     font-size: 0.9rem;
+    border-left: 3px solid {MID};
 }}
 
-.narrative-box.suggestion {{
-    background: {RED_DIM};
-    border-color: {RED};
+.agent-label {{
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #999;
+    margin-top: 0.75rem;
+    margin-bottom: 0.3rem;
 }}
 
-/* Small meta “pills” */
-.meta-pill {{
-    display: inline-flex;
-    align-items: center;
-    gap: 0.35rem;
-    padding: 0.2rem 0.5rem;
-    border-radius: 999px;
-    font-size: 0.75rem;
-    background: {OFF_WH};
-    border: 1px solid {LIGHT};
-    color: {DARK};
+.error-notice {{
+    margin-top: 0.25rem;
+    padding: 0.4rem 0.7rem;
+    border-radius: 4px;
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    font-size: 0.82rem;
+    color: #991b1b;
 }}
 
-/* Buttons – red primary like Tesla */
 .stButton button[kind="primary"],
 .stButton button:hover {{
     background-color: {RED} !important;
     border-color: {RED_D} !important;
     color: {WHITE} !important;
+    border-radius: 4px !important;
+    font-size: 0.8rem !important;
 }}
 
 .stButton button:active {{
     background-color: {RED_D} !important;
 }}
 
-/* Chat input */
 [data-testid="stChatInputTextArea"] textarea {{
     background-color: {OFF_WH};
-    border-radius: 999px;
+    border: 1px solid {LIGHT};
+    border-radius: 4px;
+    font-size: 0.9rem;
 }}
 
-/* Code blocks (SQL / Python) */
 .stCode, .stMarkdown pre code {{
     background-color: {CODE_BG} !important;
     color: {SQL_COL} !important;
-    border-radius: 6px;
-    font-size: 0.8rem;
+    border-radius: 4px;
+    font-size: 0.78rem;
+}}
+
+[data-testid="stDataFrame"] {{
+    border: 1px solid {LIGHT};
+    border-radius: 4px;
 }}
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
 
-# ── Plotly theme (light, Tesla-aligned) ───────────────────────────────────────
+# ── Plotly theme ──────────────────────────────────────────────────────────────
 
 CHART_LAYOUT = dict(
     plot_bgcolor=WHITE,
     paper_bgcolor=WHITE,
-    font=dict(color=DARK, family="Inter", size=12),
-    title_font=dict(size=14, color=BLACK, family="Inter"),
+    font=dict(color=DARK, family="Helvetica Neue, Arial, sans-serif", size=12),
+    title_font=dict(size=13, color=BLACK, family="Helvetica Neue, Arial, sans-serif"),
     margin=dict(t=48, b=28, l=28, r=28),
     xaxis=dict(
         gridcolor=LIGHT,
@@ -158,16 +182,8 @@ CHART_LAYOUT = dict(
 )
 
 PIE_COLORS = [
-    RED,
-    "#393c41",
-    "#7fb3d3",
-    "#82c596",
-    "#f0a070",
-    "#b39ddb",
-    "#ffcc80",
-    "#a8d8a8",
-    "#ff8a80",
-    "#b81920",
+    RED, "#393c41", "#7fb3d3", "#82c596", "#f0a070",
+    "#b39ddb", "#ffcc80", "#a8d8a8", "#ff8a80", "#b81920",
 ]
 
 # ── Load agent (cached per session) ──────────────────────────────────────────
@@ -213,27 +229,18 @@ def render_chart(rows, cfg, money_cols):
             fig.update_traces(marker_line_width=0)
         elif ct == "line":
             fig = px.line(
-                df,
-                x=x,
-                y=y,
-                title=title,
-                color_discrete_sequence=[RED],
-                markers=True,
+                df, x=x, y=y, title=title,
+                color_discrete_sequence=[RED], markers=True,
             )
             fig.update_traces(
-                marker_size=7,
-                line_width=2.5,
+                marker_size=7, line_width=2.5,
                 marker=dict(color=RED, line=dict(color=WHITE, width=1)),
             )
         elif ct == "pie":
             fig = go.Figure(
                 go.Pie(
-                    labels=df[x],
-                    values=df[y],
-                    hole=0.38,
-                    marker=dict(
-                        colors=PIE_COLORS, line=dict(color=WHITE, width=2)
-                    ),
+                    labels=df[x], values=df[y], hole=0.38,
+                    marker=dict(colors=PIE_COLORS, line=dict(color=WHITE, width=2)),
                     textfont=dict(size=12, color=WHITE),
                 )
             )
@@ -241,21 +248,16 @@ def render_chart(rows, cfg, money_cols):
         elif ct == "funnel":
             fig = go.Figure(
                 go.Funnel(
-                    y=df[x],
-                    x=df[y],
+                    y=df[x], x=df[y],
                     textinfo="value+percent initial",
-                    marker=dict(
-                        color=[RED, "#c44", "#a33", "#822", "#611", "#400"]
-                    ),
+                    marker=dict(color=[RED, "#c44", "#a33", "#822", "#611", "#400"]),
                     connector=dict(line=dict(color=LIGHT, width=1)),
                     textfont=dict(color=WHITE, size=12),
                 )
             )
             fig.update_layout(title=dict(text=title))
         elif ct == "scatter":
-            fig = px.scatter(
-                df, x=x, y=y, title=title, color_discrete_sequence=[RED]
-            )
+            fig = px.scatter(df, x=x, y=y, title=title, color_discrete_sequence=[RED])
             fig.update_traces(marker_size=9, marker_opacity=0.75)
         else:
             return
@@ -267,7 +269,6 @@ def render_chart(rows, cfg, money_cols):
 
         st.plotly_chart(fig, use_container_width=True)
     except Exception:
-        # Fail silently for chart errors; the table + SQL are still useful
         pass
 
 
@@ -276,11 +277,15 @@ def render_chart(rows, cfg, money_cols):
 with st.sidebar:
     st.markdown(
         f"""
-        <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.5rem;">
-            <img src="{LOGO_URL}" width="24">
-            <span style="font-weight:600;font-size:1.05rem;">HR Intelligence</span>
+        <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.25rem;">
+            <img src="{LOGO_URL}" width="22">
+            <span style="font-weight:600;font-size:1rem;letter-spacing:0.04em;">
+                HR Intelligence
+            </span>
         </div>
-        <div style="font-size:0.9rem;color:#555;">Data Analytics Platform</div>
+        <div style="font-size:0.78rem;color:#888;letter-spacing:0.02em;">
+            Data Analytics Platform
+        </div>
         """,
         unsafe_allow_html=True,
     )
@@ -291,16 +296,13 @@ with st.sidebar:
         st.error(f"Could not start agent: {e}")
         st.stop()
 
-    # Upload section - FIRST so user uploads before asking
     st.markdown(
-        """
-        <h4 style="margin-top:1.5rem;margin-bottom:0.25rem;">Upload Data</h4>
-        """,
+        '<div class="section-header">Upload Data</div>',
         unsafe_allow_html=True,
     )
     st.markdown(
         """
-        <div style="font-size:0.85rem;color:#555;margin-bottom:0.25rem;">
+        <div style="font-size:0.8rem;color:#777;margin-bottom:0.3rem;">
             Upload CSV or Excel (.xlsx). The agent auto-detects all columns, dates, and joins.
         </div>
         """,
@@ -321,51 +323,32 @@ with st.sidebar:
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                 tmp.write(f.read())
                 tmp_path = tmp.name
-    
+
             with st.spinner(f"Loading {f.name}..."):
-                # Be defensive: support both old and new DataAgent versions
                 if hasattr(agent, "upload_file"):
                     r = agent.upload_file(Path(f.name).stem, tmp_path)
                 elif hasattr(agent, "upload_csv"):
-                    # Fallback for older agent_hr.py that only had upload_csv
                     r = agent.upload_csv(Path(f.name).stem, tmp_path)
                 else:
-                    st.error(
-                        "DataAgent has neither `upload_file` nor `upload_csv`. "
-                        "Check agent_hr.py."
-                    )
+                    st.error("DataAgent missing upload method. Check agent_hr.py.")
                     os.unlink(tmp_path)
                     continue
-    
+
             os.unlink(tmp_path)
-    
+
             if "error" in r:
                 st.error(f"{f.name}: {r['error']}")
             else:
                 st.success(f"{f.name}: loaded {r['rows_loaded']:,} rows")
                 for t in r.get("tables", []):
-                    st.markdown(
-                        f"""
-    ↳ table `{t["table"]}` ({t["rows_loaded"]:,} rows)
-    """,
-                        unsafe_allow_html=True,
-                    )
+                    st.caption(f"Table: {t['table']} ({t['rows_loaded']:,} rows)")
                 for t in r.get("tables", []):
                     for hint in t.get("join_hints", []):
-                        st.markdown(
-                            f"""
-    
-    {hint}
-    
-    """,
-                            unsafe_allow_html=True,
-                        )
-    # Sample questions (only shown if data is loaded)
+                        st.caption(hint)
+
     if agent.has_data():
         st.markdown(
-            """
-            <h4 style="margin-top:1.5rem;margin-bottom:0.25rem;">Sample Questions</h4>
-            """,
+            '<div class="section-header">Sample Questions</div>',
             unsafe_allow_html=True,
         )
         examples = [
@@ -377,24 +360,16 @@ with st.sidebar:
             "What are the unique values in each column?",
             "Show monthly trend as a line chart",
             "What is the conversion rate by stage?",
-            "Show top 10 job positions by count",
-            "Distribution of job levels as a pie chart",
-            "How many unique applicants per year?",
-            "Show stage breakdown as a percentage",
-            "How many female applicants are there?",
         ]
         for ex in examples:
             if st.button(ex, key=f"ex_{ex}", use_container_width=True):
                 st.session_state.prefill = ex
                 st.rerun()
 
-    # Loaded tables
     schema = agent.get_schema_summary()
     if schema:
         st.markdown(
-            """
-            <h4 style="margin-top:1.5rem;margin-bottom:0.25rem;">Loaded Tables</h4>
-            """,
+            '<div class="section-header">Loaded Tables</div>',
             unsafe_allow_html=True,
         )
         for t in schema:
@@ -403,9 +378,9 @@ with st.sidebar:
                 st.markdown(
                     f"""
                     <div style="display:flex;justify-content:space-between;
-                                font-size:0.85rem;margin-bottom:0.15rem;">
+                                font-size:0.82rem;margin-bottom:0.15rem;">
                         <span><code>{t["name"]}</code></span>
-                        <span style="color:#555;">{t["rows"]:,} rows</span>
+                        <span style="color:#888;">{t["rows"]:,} rows</span>
                     </div>
                     """,
                     unsafe_allow_html=True,
@@ -431,12 +406,16 @@ if "prefill" not in st.session_state:
 
 st.markdown(
     f"""
-    <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.75rem;">
-        <img src="{LOGO_URL}" width="40">
+    <div style="display:flex;align-items:center;gap:0.75rem;
+                margin-bottom:0.5rem;padding-bottom:0.5rem;
+                border-bottom:1px solid {LIGHT};">
+        <img src="{LOGO_URL}" width="36">
         <div>
-            <div style="font-size:1.4rem;font-weight:600;">HR Intelligence</div>
-            <div style="font-size:0.9rem;color:#555;">
-                Ask questions in plain English — get SQL, Python code, and charts
+            <div style="font-size:1.3rem;font-weight:600;letter-spacing:0.04em;">
+                HR Intelligence
+            </div>
+            <div style="font-size:0.82rem;color:#888;">
+                Ask questions in plain English &mdash; get SQL, Python code, and charts
             </div>
         </div>
     </div>
@@ -448,29 +427,32 @@ st.markdown(
 
 if not agent.has_data():
     st.markdown(
-        """
-        <div style="text-align:center;margin-top:3rem;font-size:0.95rem;color:#555;">
-            <div style="font-size:2.2rem;margin-bottom:0.5rem;">📊</div>
-            <b>Upload your data to get started</b><br>
+        f"""
+        <div style="text-align:center;margin-top:3.5rem;font-size:0.92rem;color:#888;">
+            <div style="font-size:1.3rem;font-weight:500;color:{DARK};margin-bottom:0.4rem;">
+                Upload your data to get started
+            </div>
             Use the <b>Upload Data</b> panel in the sidebar.<br>
-            Works with CSV or Excel — the agent auto-detects all columns, types, and relationships.
+            Supports CSV and Excel. The agent auto-detects all columns, types, and relationships.
         </div>
         """,
         unsafe_allow_html=True,
     )
 elif not st.session_state.messages:
-    # Data loaded but no questions yet
     tables = agent.get_schema_summary()
     if tables:
         t = tables[0]
         st.markdown(
             f"""
-            <div style="margin-top:2rem;font-size:0.95rem;color:#555;">
-                <div style="font-size:2rem;margin-bottom:0.25rem;">⚡</div>
-                <b>Ready — ask anything</b><br>
-                <code>{t['name']}</code> loaded with {t['rows']:,} rows.<br>
-                Try: <code>Show count by stage</code> or
-                <code>What is the conversion funnel?</code> or
+            <div style="margin-top:2rem;font-size:0.92rem;color:#888;">
+                <div style="font-size:1.1rem;font-weight:500;color:{DARK};
+                            margin-bottom:0.25rem;">
+                    Ready to analyze
+                </div>
+                <code>{t['name']}</code> loaded with <b>{t['rows']:,}</b> rows.
+                Try a question like
+                <code>Show count by stage</code>,
+                <code>What is the conversion funnel?</code>, or
                 <code>Show monthly trend as a line chart</code>.
             </div>
             """,
@@ -482,93 +464,56 @@ elif not st.session_state.messages:
 for msg in st.session_state.messages:
     if msg["role"] == "user":
         st.markdown(
-            f"""
-            <div style="margin:0.5rem 0;padding:0.6rem 0.75rem;
-                        border-radius:0.5rem;background:{OFF_WH};">
-                {msg["content"]}
-            </div>
-            """,
+            f'<div class="user-question">{msg["content"]}</div>',
             unsafe_allow_html=True,
         )
     else:
         st.markdown(
-            """
-            <div style="font-size:0.8rem;color:#888;margin-top:0.75rem;margin-bottom:0.25rem;">
-                Tesla HR Intelligence
-            </div>
-            """,
+            '<div class="agent-label">Tesla HR Intelligence</div>',
             unsafe_allow_html=True,
         )
 
         if msg.get("narrative"):
-            is_sug = not msg.get("rows") and not msg.get("error")
-            bg = OFF_WH if not is_sug else RED_DIM
-            icon = "💡 " if is_sug else ""
+            has_error = bool(msg.get("error")) or (
+                not msg.get("rows") and not msg.get("error")
+            )
+            cls = "response-card has-error" if has_error else "response-card"
             st.markdown(
-                f"""
-                <div style="margin-bottom:0.4rem;padding:0.6rem 0.75rem;
-                            border-radius:0.5rem;background:{bg};font-size:0.9rem;">
-                    {icon}{msg["narrative"]}
-                </div>
-                """,
+                f'<div class="{cls}">{msg["narrative"]}</div>',
                 unsafe_allow_html=True,
             )
 
-        # SQL + Code side by side
         c_sql, c_code = st.columns(2)
         with c_sql:
             if msg.get("sql"):
                 with st.expander("View SQL"):
                     st.markdown(
-                        f"""
-                        <pre style="background:{CODE_BG};color:{SQL_COL};
-                                    padding:0.75rem;border-radius:0.5rem;
-                                    font-size:0.8rem;white-space:pre-wrap;">
-{msg["sql"]}
-                        </pre>
-                        """,
+                        f"""<pre style="background:{CODE_BG};color:{SQL_COL};
+                                    padding:0.75rem;border-radius:4px;
+                                    font-size:0.78rem;white-space:pre-wrap;
+                                    overflow-x:auto;">{msg["sql"]}</pre>""",
                         unsafe_allow_html=True,
                     )
         with c_code:
             if msg.get("code"):
                 with st.expander("View Python Code"):
                     st.markdown(
-                        f"""
-                        <pre style="background:{CODE_BG};color:{PY_COL};
-                                    padding:0.75rem;border-radius:0.5rem;
-                                    font-size:0.8rem;white-space:pre-wrap;">
-{msg["code"]}
-                        </pre>
-                        """,
+                        f"""<pre style="background:{CODE_BG};color:{PY_COL};
+                                    padding:0.75rem;border-radius:4px;
+                                    font-size:0.78rem;white-space:pre-wrap;
+                                    overflow-x:auto;">{msg["code"]}</pre>""",
                         unsafe_allow_html=True,
                     )
 
         if msg.get("error"):
             st.markdown(
-                f"""
-                <div style="margin-top:0.25rem;padding:0.4rem 0.6rem;
-                            border-radius:0.4rem;background:#fff4f4;
-                            font-size:0.85rem;color:#b00020;">
-                    ⚠ {msg["error"]}
-                </div>
-                """,
+                f'<div class="error-notice">{msg["error"]}</div>',
                 unsafe_allow_html=True,
             )
 
-        # Up to 3 charts
         charts = msg.get("charts", [])
         mcols = msg.get("money_cols", [])
         if charts and msg.get("rows"):
-            if len(charts) > 1:
-                st.markdown(
-                    f"""
-                    <div style="font-size:0.85rem;color:#555;margin:0.4rem 0;">
-                        ⚡ {len(charts)} charts generated
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-
             if len(charts) == 1:
                 render_chart(msg["rows"], charts[0], mcols)
             elif len(charts) == 2:
