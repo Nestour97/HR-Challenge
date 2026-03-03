@@ -321,12 +321,24 @@ with st.sidebar:
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                 tmp.write(f.read())
                 tmp_path = tmp.name
-
+    
             with st.spinner(f"Loading {f.name}..."):
-                r = agent.upload_file(Path(f.name).stem, tmp_path)
-
+                # Be defensive: support both old and new DataAgent versions
+                if hasattr(agent, "upload_file"):
+                    r = agent.upload_file(Path(f.name).stem, tmp_path)
+                elif hasattr(agent, "upload_csv"):
+                    # Fallback for older agent_hr.py that only had upload_csv
+                    r = agent.upload_csv(Path(f.name).stem, tmp_path)
+                else:
+                    st.error(
+                        "DataAgent has neither `upload_file` nor `upload_csv`. "
+                        "Check agent_hr.py."
+                    )
+                    os.unlink(tmp_path)
+                    continue
+    
             os.unlink(tmp_path)
-
+    
             if "error" in r:
                 st.error(f"{f.name}: {r['error']}")
             else:
@@ -334,25 +346,20 @@ with st.sidebar:
                 for t in r.get("tables", []):
                     st.markdown(
                         f"""
-                        <div style="font-size:0.8rem;color:#444;margin-bottom:0.1rem;">
-                            ↳ table <code>{t["table"]}</code> ({t["rows_loaded"]:,} rows)
-                        </div>
-                        """,
+    ↳ table `{t["table"]}` ({t["rows_loaded"]:,} rows)
+    """,
                         unsafe_allow_html=True,
                     )
                 for t in r.get("tables", []):
                     for hint in t.get("join_hints", []):
                         st.markdown(
                             f"""
-                            <div style="font-size:0.75rem;color:#444;margin:0.1rem 0;
-                                        padding:0.15rem 0.4rem;border-radius:999px;
-                                        background:{RED_DIM};">
-                                🔗 {hint}
-                            </div>
-                            """,
+    
+    {hint}
+    
+    """,
                             unsafe_allow_html=True,
                         )
-
     # Sample questions (only shown if data is loaded)
     if agent.has_data():
         st.markdown(
