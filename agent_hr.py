@@ -55,18 +55,23 @@ Convert the user's natural-language question into a single read-only SELECT quer
 
 STRICT RULES:
 1. Output ONLY raw SQL — zero markdown, zero backticks, zero explanation.
-2. ONLY use the exact column names listed above — copy character-for-character.
-3. NEVER invent column names. If you are unsure, pick the closest listed column.
+2. ONLY use the exact table and column names listed above — copy them character-for-character.
+3. NEVER invent new column names. If the user says something that is not in the schema,
+   map it to the closest REAL column name, e.g.:
+   - "level" / "job level" → "job_level"
+   - "applicant id" / "candidate id" / "person id" → "applicant_id"
+   - "date applied" / "application date" → "date_applied"
 4. Text filters: LOWER(col) LIKE LOWER('%value%')
 5. Percentages: ROUND(100.0 * part / total, 1)
 6. CTEs are encouraged for multi-step logic.
-7. ORDER BY relevant column; add LIMIT where appropriate.
-8. Reserved words as column names must be quoted: "Level", "Date", "Group", etc.
-9. NEVER use CREATE / DROP / UPDATE / INSERT / DELETE.
+7. ORDER BY a relevant column; add LIMIT where appropriate.
+8. If you ever need a reserved word as a column name, you MUST quote it, but in this schema
+   the columns are "job_level", NOT "Level".
+9. NEVER use CREATE / DROP / UPDATE / INSERT / DELETE, only safe SELECT queries.
 """
 
 RETRY_SYSTEM = """You are an expert SQLite analyst.
-The query below failed. Fix ONLY the error — do not change the logic.
+The query below failed. Fix the query so it runs correctly on the schema.
 
 {schema_block}
 
@@ -75,6 +80,12 @@ FAILED QUERY:
 
 ERROR:
 {error}
+
+You are allowed to:
+- Correct table and column names to match the schema (e.g. "Level" → "job_level",
+  "Applicant_ID" → "applicant_id").
+- Add or adjust joins so they use the real keys in the schema.
+Do NOT introduce any non-SELECT statements.
 
 Output ONLY the corrected raw SQL. No markdown, no backticks, no explanation.
 """
