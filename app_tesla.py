@@ -180,7 +180,8 @@ for msg in st.session_state.messages:
         if msg.get("narrative"):
             is_sug = not msg.get("rows") and not msg.get("error")
             cls = "narrative-box suggestion" if is_sug else "narrative-box"
-            st.markdown(f'<div class="{cls">{"💡 " if is_sug else ""}{msg["narrative"]}</div>', unsafe_allow_html=True)
+            icon = "&#128161; " if is_sug else ""
+            st.markdown(f'<div class="{cls}">{icon}{msg["narrative"]}</div>', unsafe_allow_html=True)
         cs, cc = st.columns(2)
         with cs:
             if msg.get("sql"):
