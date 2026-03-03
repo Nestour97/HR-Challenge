@@ -12,7 +12,8 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
-from typing import Any, Dict, List
+from difflib import get_close_matches
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
@@ -48,30 +49,36 @@ BLOCKED = re.compile(
 # Prompts
 # ──────────────────────────────────────────────────────────────────────────────
 
-SQL_SYSTEM = """You are an expert SQLite analyst.
-Convert the user's natural-language question into a single read-only SELECT query.
+SQL_SYSTEM = """You are an expert SQLite analyst generating read-only SELECT queries.
 
 {schema_block}
 
-STRICT RULES:
-1. Output ONLY raw SQL — zero markdown, zero backticks, zero explanation.
-2. ONLY use the exact table and column names listed above — copy them character-for-character.
-3. NEVER invent new column names. If the user says something that is not in the schema,
-   map it to the closest REAL column name, e.g.:
-   - "level" / "job level" → "job_level"
-   - "applicant id" / "candidate id" / "person id" → "applicant_id"
-   - "date applied" / "application date" → "date_applied"
-4. Text filters: LOWER(col) LIKE LOWER('%value%')
-5. Percentages: ROUND(100.0 * part / total, 1)
-6. CTEs are encouraged for multi-step logic.
-7. ORDER BY a relevant column; add LIMIT where appropriate.
-8. If you ever need a reserved word as a column name, you MUST quote it, but in this schema
-   the columns are "job_level", NOT "Level".
-9. NEVER use CREATE / DROP / UPDATE / INSERT / DELETE, only safe SELECT queries.
+ABSOLUTE RULES — violating ANY rule causes the query to fail:
+1. Output ONLY raw SQL — no markdown, no backticks, no explanation whatsoever.
+2. Use ONLY the exact table and column names shown in the schema above.
+   Every valid column name is shown in double quotes. Copy them letter-for-letter.
+3. NEVER invent, guess, or modify column names. A column you reference MUST appear
+   in the schema. If the concept you need has no matching column, use the closest
+   listed column instead — do not make one up.
+4. Before writing any column name, mentally check: "Is this name listed in the schema
+   above?" If not, stop and use the correct name from the schema.
+5. Common user-term → real column mappings (use only if that column exists in schema):
+   - "applicant" / "candidate" / "person" / "employee" → look for an id column
+   - "level" / "seniority" / "grade" → "job_level"
+   - "department" / "dept" / "team" → "department_code"
+   - "position" / "role" / "job title" → "job_position_code"
+   - "stage" / "status" / "step" / "pipeline" → "stage"
+   - "date" / "applied" / "application date" → "date_applied"
+   - "gender" / "sex" → "gender"
+   - "ethnicity" / "race" → "ethnicity"
+6. Text filters: LOWER(col) LIKE LOWER('%value%')
+7. Percentages: ROUND(100.0 * part / total, 1)
+8. Use CTEs for multi-step logic. ORDER BY a relevant column; add LIMIT where helpful.
+9. NEVER use CREATE / DROP / UPDATE / INSERT / DELETE — only SELECT / WITH.
 """
 
 RETRY_SYSTEM = """You are an expert SQLite analyst.
-The query below failed. Fix the query so it runs correctly on the schema.
+The query below failed with an error. Fix it so it runs correctly on the given schema.
 
 {schema_block}
 
@@ -80,12 +87,13 @@ FAILED QUERY:
 
 ERROR:
 {error}
-
-You are allowed to:
-- Correct table and column names to match the schema (e.g. "Level" → "job_level",
-  "Applicant_ID" → "applicant_id").
-- Add or adjust joins so they use the real keys in the schema.
-Do NOT introduce any non-SELECT statements.
+{col_hint}
+REPAIR INSTRUCTIONS:
+- If the error says "no such column: X", column X does NOT exist in any table.
+  Find the closest column from the schema above and use that instead.
+- If the error says "no such table: T", use only the tables listed in the schema.
+- Copy every table name and column name exactly as shown in the schema — character-for-character.
+- Do NOT introduce any non-SELECT statements.
 
 Output ONLY the corrected raw SQL. No markdown, no backticks, no explanation.
 """
@@ -422,22 +430,37 @@ def _safe_sql(sql: str):
 
 def _schema_block(tables_info: dict) -> str:
     if not tables_info:
-        return "No tables loaded.\nAsk user to upload a CSV or Excel file first."
+        return "No tables loaded.\nAsk the user to upload a CSV or Excel file first."
 
     blocks: List[str] = []
 
     for tname, info in tables_info.items():
+        col_names = list(info["col_types"].keys())
         lines = [
+            f'{"=" * 60}',
             f'TABLE NAME (use exactly): "{tname}"',
             f'ROW COUNT: {info["rows_loaded"]:,}',
-            "COLUMNS (use these exact names — copy character-for-character):",
+            f'{"=" * 60}',
+            "VALID COLUMN NAMES — these are the ONLY columns that exist.",
+            "Copy each name exactly (character-for-character, same case):",
         ]
         for col, dtype in info["col_types"].items():
             sv = info["sample_values"].get(col)
-            sv_str = f" e.g. {sv[:5]}" if sv else ""
-            lines.append(f' "{col}" {dtype}{sv_str}')
+            sv_str = f"  [e.g. {sv[:4]}]" if sv else ""
+            lines.append(f'  "{col}"  {dtype}{sv_str}')
+
+        lines.append("")
+        lines.append(
+            "COMPLETE COLUMN LIST: "
+            + ", ".join(f'"{c}"' for c in col_names)
+        )
+        lines.append(
+            "WARNING: Any name NOT in the list above does not exist in this table."
+        )
+
         for hint in info.get("join_hints", []):
-            lines.append(f"JOIN: {hint}")
+            lines.append(f"JOIN HINT: {hint}")
+
         blocks.append("\n".join(lines))
 
     return "\n\n".join(blocks)
@@ -477,10 +500,100 @@ def _generate_sql(question, history, client, tables_info) -> str:
     return _clean_sql(_chat(client, system, msgs))
 
 
+def _extract_bad_column(error: str) -> Optional[str]:
+    """Extract the offending column name from a SQLite 'no such column' error."""
+    m = re.search(r"no such column[:\s]+([^\s,]+)", error, re.IGNORECASE)
+    if m:
+        return m.group(1).strip('"').strip("'")
+    m = re.search(r"table \w+ has no column named ([^\s,]+)", error, re.IGNORECASE)
+    if m:
+        return m.group(1).strip('"').strip("'")
+    return None
+
+
+def _build_col_registry(tables_info: dict) -> Dict[str, str]:
+    """Build a lowercase → exact-name registry of all columns across all tables."""
+    registry: Dict[str, str] = {}
+    for info in tables_info.values():
+        for col in info.get("columns", []):
+            registry[col.lower()] = col
+    return registry
+
+
+def _fuzzy_col_match(name: str, registry: Dict[str, str]) -> Optional[str]:
+    """Return the best-matching real column name for a potentially wrong name."""
+    lower = name.lower()
+
+    # 1. Exact case-insensitive match
+    if lower in registry:
+        return registry[lower]
+
+    # 2. Strip underscores and try again
+    stripped = lower.replace("_", "")
+    for real_lower, real in registry.items():
+        if real_lower.replace("_", "") == stripped:
+            return real
+
+    # 3. Fuzzy match (≥70% similarity)
+    matches = get_close_matches(lower, list(registry.keys()), n=1, cutoff=0.70)
+    if matches:
+        return registry[matches[0]]
+
+    return None
+
+
+def _fix_column_in_sql(sql: str, bad_col: str, tables_info: dict) -> str:
+    """Replace a bad column reference in SQL with the best fuzzy-matched real column."""
+    registry = _build_col_registry(tables_info)
+    real = _fuzzy_col_match(bad_col, registry)
+    if not real:
+        return sql
+
+    # Replace double-quoted identifiers: "bad_col" → "real"
+    pattern_quoted = re.compile(r'"' + re.escape(bad_col) + r'"', re.IGNORECASE)
+    sql = pattern_quoted.sub(f'"{real}"', sql)
+
+    # Replace unquoted occurrences at word boundaries
+    pattern_unquoted = re.compile(r"\b" + re.escape(bad_col) + r"\b", re.IGNORECASE)
+    sql = pattern_unquoted.sub(real, sql)
+
+    return sql
+
+
 def _retry_sql(question, failed_sql, error, client, tables_info) -> str:
     schema = _schema_block(tables_info)
+
+    # Build a specific correction hint when a column name is the culprit
+    col_hint = ""
+    bad_col = _extract_bad_column(error)
+    if bad_col:
+        registry = _build_col_registry(tables_info)
+        real = _fuzzy_col_match(bad_col, registry)
+        if real and real.lower() != bad_col.lower():
+            col_hint = (
+                f'\nSPECIFIC FIX REQUIRED: Column "{bad_col}" does not exist. '
+                f'The closest real column is "{real}". '
+                f"Replace every reference to \"{bad_col}\" with \"{real}\".\n"
+            )
+        elif real:
+            col_hint = (
+                f'\nSPECIFIC FIX REQUIRED: Column "{bad_col}" does not exist '
+                f"(check capitalisation). The correct column name is \"{real}\".\n"
+            )
+        else:
+            # List all columns to help the LLM choose
+            all_cols = list(registry.values())
+            col_hint = (
+                f'\nSPECIFIC FIX REQUIRED: Column "{bad_col}" does not exist in any table. '
+                f"All available columns: {all_cols}. "
+                f"Choose the most relevant column from this list.\n"
+            )
+
     system = RETRY_SYSTEM.format(
-        schema_block=schema, failed_sql=failed_sql, error=error
+        schema_block=schema,
+        failed_sql=failed_sql,
+        error=error,
+        col_hint=col_hint,
     )
     return _clean_sql(
         _chat(client, system, [{"role": "user", "content": question}])
@@ -852,7 +965,7 @@ class DataAgent:
 
         intents = detect_chart_intents(question)
 
-        # Generate + execute SQL
+        # Generate SQL
         sql = _generate_sql(question, self.history, self.client, self.tables_info)
         out["sql"] = sql
 
@@ -866,17 +979,40 @@ class DataAgent:
 
         rows, exec_error = self._run_sql(sql)
 
-        # Retry once on failure
-        if exec_error:
-            sql2 = _retry_sql(question, sql, exec_error, self.client, self.tables_info)
-            rows2, exec_error2 = self._run_sql(sql2)
+        # Up to 2 recovery attempts: first try fast auto-correction, then LLM retry
+        for _attempt in range(2):
+            if not exec_error:
+                break
+
+            bad_col = _extract_bad_column(exec_error)
+
+            # Attempt 1: local auto-correction (no LLM call, very fast)
+            if bad_col:
+                corrected = _fix_column_in_sql(sql, bad_col, self.tables_info)
+                if corrected != sql:
+                    rows2, err2 = self._run_sql(corrected)
+                    if not err2:
+                        sql = corrected
+                        out["sql"] = sql
+                        rows, exec_error = rows2, None
+                        break
+                    sql = corrected  # use corrected version as base for LLM retry
+
+            # Attempt 2: LLM retry with detailed column hint
+            sql_retry = _retry_sql(
+                question, sql, exec_error, self.client, self.tables_info
+            )
+            rows2, exec_error2 = self._run_sql(sql_retry)
             if not exec_error2:
-                out["sql"] = sql2
+                sql = sql_retry
+                out["sql"] = sql
                 rows, exec_error = rows2, None
             else:
-                out["error"] = exec_error
+                sql = sql_retry
+                exec_error = exec_error2
 
         if exec_error:
+            out["error"] = exec_error
             out["narrative"] = _narrative(
                 question, [], exec_error, self.tables_info, self.client
             )
