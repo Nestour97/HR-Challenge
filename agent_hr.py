@@ -5,6 +5,7 @@
 - Works with CSV and Excel (multi-sheet) uploads
 - Passes EXACT column names prominently in every prompt
 - Retries SQL up to 2× with the error message fed back to LLM
+- Fuzzy-matches user terms to real column names before SQL generation
 """
 
 from __future__ import annotations
@@ -12,7 +13,8 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
-from typing import Any, Dict, List
+from difflib import SequenceMatcher
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
@@ -35,6 +37,8 @@ except Exception:  # pragma: no cover
 
 MODEL = "llama-3.3-70b-versatile" if _CLIENT_TYPE == "groq" else "gpt-4o"
 
+MAX_RETRIES = 2
+
 BLOCKED = re.compile(
     r"\b("
     r"DROP\s+TABLE|DROP\s+VIEW|DELETE\s+FROM|UPDATE\s+\w+\s+SET|INSERT\s+INTO"
@@ -48,32 +52,45 @@ BLOCKED = re.compile(
 # Prompts
 # ──────────────────────────────────────────────────────────────────────────────
 
-SQL_SYSTEM = """You are an expert SQLite analyst.
+SQL_SYSTEM = """You are an expert SQLite analyst working for a Fortune 500 company.
 Convert the user's natural-language question into a single read-only SELECT query.
 
 {schema_block}
 
-STRICT RULES:
+{column_hints}
+
+STRICT RULES — FOLLOW EVERY ONE:
 1. Output ONLY raw SQL — zero markdown, zero backticks, zero explanation.
-2. ONLY use the exact table and column names listed above — copy them character-for-character.
-3. NEVER invent new column names. If the user says something that is not in the schema,
-   map it to the closest REAL column name, e.g.:
-   - "level" / "job level" → "job_level"
-   - "applicant id" / "candidate id" / "person id" → "applicant_id"
-   - "date applied" / "application date" → "date_applied"
-4. Text filters: LOWER(col) LIKE LOWER('%value%')
-5. Percentages: ROUND(100.0 * part / total, 1)
-6. CTEs are encouraged for multi-step logic.
-7. ORDER BY a relevant column; add LIMIT where appropriate.
-8. If you ever need a reserved word as a column name, you MUST quote it, but in this schema
-   the columns are "job_level", NOT "Level".
-9. NEVER use CREATE / DROP / UPDATE / INSERT / DELETE, only safe SELECT queries.
+2. ONLY use the EXACT table and column names listed above — copy them character-for-character.
+   Double-check every column name in your query against the schema before outputting.
+3. NEVER invent, guess, or hallucinate column names. The ONLY valid column names are the ones
+   listed above. If a column is not in the schema, it does NOT exist.
+4. When the user refers to a concept, map it to the CLOSEST matching column:
+   - Think about synonyms, abbreviations, and natural language variations.
+   - "level" / "job level" / "position level" → look for columns containing "level"
+   - "applicant" / "candidate" / "person" → look for columns containing "applicant" or "id"
+   - "date" / "when applied" / "application date" → look for columns containing "date"
+   - "gender" / "male" / "female" → look for gender-related columns
+   - "race" / "ethnicity" / "diversity" → look for ethnicity-related columns
+   - "department" / "dept" / "team" / "division" → look for department-related columns
+   - "conversion" / "funnel" / "pipeline" → use the stage column with COUNT/GROUP BY
+5. Text filters: LOWER(col) LIKE LOWER('%value%') — always case-insensitive.
+6. Percentages: ROUND(100.0 * part / total, 1)
+7. CTEs are encouraged for multi-step logic (conversion funnels, comparisons, etc.).
+8. ORDER BY a relevant column; add LIMIT where appropriate.
+9. Always quote column names with double quotes if they could conflict with SQL keywords.
+10. NEVER use CREATE / DROP / UPDATE / INSERT / DELETE — only safe SELECT queries.
+11. For "how many" questions, use COUNT(*). For "unique" counts, use COUNT(DISTINCT col).
+12. For "conversion funnel" or "pipeline": GROUP BY stage, count per stage, order by count DESC.
+13. When filtering text values, check the sample values provided and use matching values.
 """
 
-RETRY_SYSTEM = """You are an expert SQLite analyst.
-The query below failed. Fix the query so it runs correctly on the schema.
+RETRY_SYSTEM = """You are an expert SQLite analyst. A query failed. Fix it.
 
 {schema_block}
+
+IMPORTANT — VALID COLUMN NAMES (use ONLY these):
+{all_columns}
 
 FAILED QUERY:
 {failed_sql}
@@ -81,23 +98,25 @@ FAILED QUERY:
 ERROR:
 {error}
 
-You are allowed to:
-- Correct table and column names to match the schema (e.g. "Level" → "job_level",
-  "Applicant_ID" → "applicant_id").
-- Add or adjust joins so they use the real keys in the schema.
-Do NOT introduce any non-SELECT statements.
-
-Output ONLY the corrected raw SQL. No markdown, no backticks, no explanation.
+INSTRUCTIONS:
+- The error is almost certainly a wrong column or table name.
+- Compare every identifier in the failed query against the valid column names above.
+- Replace any non-matching identifier with the correct one from the schema.
+- Common fixes: "Level" → "job_level", "Applicant_ID" → "applicant_id",
+  "Date_Applied" → "date_applied", "Status" → "stage"
+- Do NOT introduce any non-SELECT statements.
+- Output ONLY the corrected raw SQL. No markdown, no backticks, no explanation.
 """
 
-NARRATIVE_SYSTEM = """You are a sharp data analyst.
-Write a 2-4 sentence insight.
+NARRATIVE_SYSTEM = """You are a senior data analyst presenting findings to executives.
+Write a clear, professional 2-4 sentence insight.
 
+Guidelines:
 - Data found: lead with the key number or trend, name specific values.
-- Empty result: say filter matched nothing, suggest real values that exist.
-- Error: explain plainly in plain English — no SQL jargon.
-
-Tone: direct, precise, no fluff."""
+- Empty result: explain the filter matched nothing, suggest valid values from the data.
+- Error: explain clearly in plain English without SQL jargon.
+- Be direct, precise, and professional. No filler, no emojis, no casual language.
+- Use proper business terminology."""
 
 CODE_SYSTEM = """You are a Python data analyst.
 Write a concise pandas + plotly snippet equivalent to the SQL provided.
@@ -140,41 +159,45 @@ def sanitise_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 # Canonical column aliases after sanitisation (all lower snake_case)
 ALIASES: Dict[str, set] = {
-    # Core HR challenge fields
     "date_applied": {
-        "date_applied",
-        "applied_date",
-        "application_date",
-        "date",
-        "dateapplied",
-        "date_applied_",
+        "date_applied", "applied_date", "application_date", "date",
+        "dateapplied", "date_applied_", "apply_date", "date_of_application",
+        "applied_on", "submission_date",
     },
     "applicant_id": {
-        "applicant_id",
-        "applicantid",
-        "candidate_id",
-        "candidateid",
-        "person_id",
-        "personid",
-        "app_id",
+        "applicant_id", "applicantid", "candidate_id", "candidateid",
+        "person_id", "personid", "app_id", "employee_id", "emp_id",
+        "id", "applicant_no", "candidate_no",
     },
-    "stage": {"stage", "application_stage", "status"},
-    "job_level": {"job_level", "level", "joblevel"},
-    "department_code": {"department_code", "departmentid", "dept_code"},
+    "stage": {
+        "stage", "application_stage", "status", "hiring_stage",
+        "recruitment_stage", "pipeline_stage", "step", "phase",
+        "application_status", "candidate_status",
+    },
+    "job_level": {
+        "job_level", "level", "joblevel", "position_level",
+        "grade", "job_grade", "role_level", "seniority",
+    },
+    "department_code": {
+        "department_code", "departmentid", "dept_code", "department",
+        "dept", "department_id", "dept_id", "division_code",
+        "team_code", "business_unit",
+    },
     "job_position_code": {
-        "job_position_code",
-        "jobcode",
-        "job_position",
-        "position_code",
+        "job_position_code", "jobcode", "job_position", "position_code",
+        "job_code", "role_code", "position", "job_id", "role_id",
+        "job_title_code", "position_id",
     },
     "target_start_date": {
-        "target_start_date",
-        "start_date",
-        "startdate",
-        "expected_start_date",
+        "target_start_date", "start_date", "startdate",
+        "expected_start_date", "planned_start_date", "hire_date",
+        "joining_date", "onboarding_date",
     },
-    "gender": {"gender", "sex"},
-    "ethnicity": {"ethnicity", "race"},
+    "gender": {"gender", "sex", "gender_code", "m_f"},
+    "ethnicity": {
+        "ethnicity", "race", "ethnic_group", "race_ethnicity",
+        "demographic", "ethnic_background",
+    },
 }
 
 
@@ -192,6 +215,182 @@ def apply_aliases(df: pd.DataFrame) -> pd.DataFrame:
             cols.add(canonical)
 
     return df.rename(columns=rename) if rename else df
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Fuzzy column matching & hint generation
+# ──────────────────────────────────────────────────────────────────────────────
+
+SEMANTIC_MAP: Dict[str, List[str]] = {
+    "gender": ["male", "female", "women", "woman", "men", "man", "gender", "sex", "m_f"],
+    "ethnicity": ["race", "ethnicity", "ethnic", "diversity", "minority", "hispanic",
+                   "asian", "african", "caucasian", "white", "black", "latino", "latina"],
+    "department": ["department", "dept", "team", "division", "unit", "group", "org"],
+    "stage": ["stage", "status", "pipeline", "funnel", "conversion", "step", "phase",
+              "hired", "rejected", "screening", "interview", "offer", "applied"],
+    "date": ["date", "when", "time", "period", "year", "month", "quarter", "day"],
+    "salary": ["salary", "pay", "wage", "compensation", "income", "earning", "money"],
+    "level": ["level", "seniority", "grade", "tier", "rank", "position"],
+    "applicant": ["applicant", "candidate", "person", "employee", "individual", "worker"],
+    "job": ["job", "role", "position", "title", "occupation", "work"],
+    "location": ["location", "city", "state", "country", "region", "office", "site"],
+    "age": ["age", "old", "young", "senior", "junior", "years"],
+    "education": ["education", "degree", "school", "university", "college", "qualification"],
+    "experience": ["experience", "years", "tenure", "seniority"],
+}
+
+
+def _normalise_term(term: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", term.lower())
+
+
+def _similarity(a: str, b: str) -> float:
+    return SequenceMatcher(None, a, b).ratio()
+
+
+def _depluralize(word: str) -> List[str]:
+    """Return candidate singular forms for matching purposes."""
+    forms = [word]
+    if word.endswith("ies") and len(word) > 4:
+        forms.append(word[:-3] + "y")
+    if word.endswith("ses") or word.endswith("xes") or word.endswith("zes") \
+       or word.endswith("ches") or word.endswith("shes"):
+        forms.append(word[:-2])
+    if word.endswith("s") and not word.endswith("ss") and len(word) > 3:
+        forms.append(word[:-1])
+    return forms
+
+
+def _semantic_column_match(term: str, columns: List[str]) -> Optional[str]:
+    """Use semantic keyword mapping to find a matching column."""
+    norm = term.lower().strip()
+    candidates = _depluralize(norm)
+    matched_concept = None
+
+    for concept, keywords in SEMANTIC_MAP.items():
+        if any(c in keywords for c in candidates):
+            matched_concept = concept
+            break
+        if any(c == concept for c in candidates):
+            matched_concept = concept
+            break
+    if not matched_concept:
+        return None
+
+    concept_keywords = SEMANTIC_MAP[matched_concept]
+    for col in columns:
+        col_lower = col.lower()
+        col_parts = col_lower.split("_")
+        if matched_concept in col_lower or any(matched_concept == p for p in col_parts):
+            return col
+        for kw in concept_keywords[:4]:
+            if kw in col_parts or kw == col_lower:
+                return col
+
+    return None
+
+
+def _fuzzy_match_column(term: str, columns: List[str], threshold: float = 0.55) -> Optional[str]:
+    """Find the best-matching column for a natural-language term.
+
+    Checks semantic meaning first, then falls back to string similarity.
+    """
+    norm_term = _normalise_term(term)
+    if not norm_term:
+        return None
+
+    for col in columns:
+        if norm_term == _normalise_term(col):
+            return col
+
+    semantic = _semantic_column_match(term, columns)
+    if semantic:
+        return semantic
+
+    best_col = None
+    best_score = 0.0
+
+    for col in columns:
+        norm_col = _normalise_term(col)
+        parts = col.lower().split("_")
+
+        if norm_term in norm_col or norm_col in norm_term:
+            score = 0.85
+        elif any(norm_term == _normalise_term(p) for p in parts):
+            score = 0.8
+        elif any(norm_term in _normalise_term(p) or _normalise_term(p) in norm_term for p in parts):
+            score = 0.7
+        else:
+            score = _similarity(norm_term, norm_col)
+
+        if score > best_score:
+            best_score = score
+            best_col = col
+
+    return best_col if best_score >= threshold else None
+
+
+_STOP_WORDS = frozenset({
+    "the", "what", "how", "many", "show", "get", "find",
+    "are", "there", "have", "has", "with", "from", "for",
+    "and", "not", "all", "each", "per", "can", "you",
+    "give", "tell", "about", "this", "that", "which",
+    "where", "when", "who", "why", "does", "did", "will",
+    "was", "were", "been", "being", "would", "could",
+    "should", "shall", "may", "might", "must", "our",
+    "their", "your", "its", "his", "her", "any", "some",
+    "top", "bottom", "first", "last", "by", "as", "in",
+    "on", "to", "of", "is", "it", "if", "do", "me",
+    "chart", "graph", "bar", "pie", "line", "plot",
+    "table", "data", "rows", "count", "total", "sum",
+    "average", "avg", "min", "max", "unique", "distinct",
+    "please", "need", "want", "see", "look", "like",
+    "also", "just", "really", "very", "much", "more",
+    "than", "then", "only", "also", "but", "or", "so",
+    "up", "down", "out", "off", "over", "into",
+})
+
+
+def _build_column_hints(question: str, tables_info: dict) -> str:
+    """Extract potential column references from the question and map to real columns."""
+    all_cols = []
+    for info in tables_info.values():
+        all_cols.extend(info.get("columns", []))
+    all_cols = list(dict.fromkeys(all_cols))
+
+    if not all_cols:
+        return ""
+
+    words = re.findall(r"[a-zA-Z][a-zA-Z0-9]*", question.lower())
+    candidates = [w for w in words if len(w) > 2 and w not in _STOP_WORDS]
+
+    bigrams = []
+    for i in range(len(words) - 1):
+        if words[i] not in _STOP_WORDS and words[i + 1] not in _STOP_WORDS:
+            bigrams.append(f"{words[i]} {words[i + 1]}")
+
+    hints = []
+    seen = set()
+
+    for phrase in bigrams + candidates:
+        match = _fuzzy_match_column(phrase, all_cols)
+        if match and match not in seen:
+            hints.append(f'  - User said "{phrase}" -> use column "{match}"')
+            seen.add(match)
+
+    if not hints:
+        return ""
+
+    return "COLUMN MAPPING HINTS (based on the user's question):\n" + "\n".join(hints)
+
+
+def _get_all_column_list(tables_info: dict) -> str:
+    """Build a flat, readable list of every valid column across all tables."""
+    parts = []
+    for tname, info in tables_info.items():
+        cols = ", ".join(f'"{c}"' for c in info.get("columns", []))
+        parts.append(f'  Table "{tname}": {cols}')
+    return "\n".join(parts)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -428,16 +627,31 @@ def _schema_block(tables_info: dict) -> str:
 
     for tname, info in tables_info.items():
         lines = [
-            f'TABLE NAME (use exactly): "{tname}"',
-            f'ROW COUNT: {info["rows_loaded"]:,}',
-            "COLUMNS (use these exact names — copy character-for-character):",
+            "=" * 60,
+            f'TABLE: "{tname}"  |  ROWS: {info["rows_loaded"]:,}',
+            "=" * 60,
+            "",
+            "COLUMNS (use ONLY these exact names — copy character-for-character):",
+            "",
         ]
+
+        col_name_map = info.get("col_name_map", {})
+        reverse_map = {v: k for k, v in col_name_map.items()} if col_name_map else {}
+
         for col, dtype in info["col_types"].items():
+            orig = reverse_map.get(col)
+            orig_note = f'  (original: "{orig}")' if orig and orig != col else ""
             sv = info["sample_values"].get(col)
-            sv_str = f" e.g. {sv[:5]}" if sv else ""
-            lines.append(f' "{col}" {dtype}{sv_str}')
+            if sv:
+                sample_str = ", ".join(repr(v) for v in sv[:6])
+                lines.append(f'  "{col}"  ({dtype}){orig_note}  — samples: [{sample_str}]')
+            else:
+                lines.append(f'  "{col}"  ({dtype}){orig_note}')
+        lines.append("")
+
         for hint in info.get("join_hints", []):
-            lines.append(f"JOIN: {hint}")
+            lines.append(f"JOIN HINT: {hint}")
+
         blocks.append("\n".join(lines))
 
     return "\n\n".join(blocks)
@@ -465,7 +679,8 @@ def _clean_sql(raw: str) -> str:
 
 def _generate_sql(question, history, client, tables_info) -> str:
     schema = _schema_block(tables_info)
-    system = SQL_SYSTEM.format(schema_block=schema)
+    col_hints = _build_column_hints(question, tables_info)
+    system = SQL_SYSTEM.format(schema_block=schema, column_hints=col_hints)
 
     msgs: List[Dict[str, str]] = []
     for t in history[-6:]:
@@ -479,8 +694,12 @@ def _generate_sql(question, history, client, tables_info) -> str:
 
 def _retry_sql(question, failed_sql, error, client, tables_info) -> str:
     schema = _schema_block(tables_info)
+    all_cols = _get_all_column_list(tables_info)
     system = RETRY_SYSTEM.format(
-        schema_block=schema, failed_sql=failed_sql, error=error
+        schema_block=schema,
+        all_columns=all_cols,
+        failed_sql=failed_sql,
+        error=error,
     )
     return _clean_sql(
         _chat(client, system, [{"role": "user", "content": question}])
@@ -569,9 +788,13 @@ def _load_dataframe(
     if df is None or df.empty:
         return {"error": "File appears to be empty", "table": None}
 
+    original_columns = list(df.columns)
+
     # 1. Sanitise + apply aliases
     df = sanitise_columns(df)
     df = apply_aliases(df)
+
+    col_name_map = dict(zip(original_columns, df.columns))
 
     # 2. Table name from display_name
     base = os.path.splitext(os.path.basename(display_name))[0]
@@ -612,11 +835,16 @@ def _load_dataframe(
     # 5. Write to SQLite
     df.to_sql(tname, conn, if_exists="replace", index=False)
 
-    # 6. Sample values for categorical columns
+    # 6. Sample values for all columns
     sample_values: Dict[str, list] = {}
     for col in df.columns:
-        if col_types.get(col, "TEXT") in ("TEXT", "TEXT (ISO date)"):
+        dtype = col_types.get(col, "TEXT")
+        if dtype in ("TEXT", "TEXT (ISO date)"):
             vals = [str(v) for v in df[col].dropna().unique()[:8]]
+            if vals:
+                sample_values[col] = vals
+        elif dtype in ("INTEGER", "REAL"):
+            vals = [str(v) for v in df[col].dropna().unique()[:5]]
             if vals:
                 sample_values[col] = vals
 
@@ -628,6 +856,7 @@ def _load_dataframe(
         "original": display_name,
         "columns": list(df.columns),
         "col_types": col_types,
+        "col_name_map": col_name_map,
         "rows_loaded": int(len(df)),
         "sample_values": sample_values,
         "join_hints": join_hints,
@@ -852,7 +1081,6 @@ class DataAgent:
 
         intents = detect_chart_intents(question)
 
-        # Generate + execute SQL
         sql = _generate_sql(question, self.history, self.client, self.tables_info)
         out["sql"] = sql
 
@@ -866,17 +1094,22 @@ class DataAgent:
 
         rows, exec_error = self._run_sql(sql)
 
-        # Retry once on failure
-        if exec_error:
-            sql2 = _retry_sql(question, sql, exec_error, self.client, self.tables_info)
-            rows2, exec_error2 = self._run_sql(sql2)
-            if not exec_error2:
-                out["sql"] = sql2
-                rows, exec_error = rows2, None
+        for _attempt in range(MAX_RETRIES):
+            if not exec_error:
+                break
+            sql_retry = _retry_sql(
+                question, out["sql"], exec_error, self.client, self.tables_info
+            )
+            rows_retry, err_retry = self._run_sql(sql_retry)
+            if not err_retry:
+                out["sql"] = sql_retry
+                rows, exec_error = rows_retry, None
             else:
-                out["error"] = exec_error
+                out["sql"] = sql_retry
+                exec_error = err_retry
 
         if exec_error:
+            out["error"] = exec_error
             out["narrative"] = _narrative(
                 question, [], exec_error, self.tables_info, self.client
             )
@@ -884,13 +1117,11 @@ class DataAgent:
 
         out["rows"] = rows
 
-        # Money columns
         if rows:
             out["money_columns"] = [
                 c for c in rows[0].keys() if _is_money(c)
             ]
 
-        # Python code
         all_cols: List[str] = []
         for info in self.tables_info.values():
             all_cols.extend(info["columns"])
@@ -898,12 +1129,10 @@ class DataAgent:
             question, out["sql"], list(dict.fromkeys(all_cols)), self.client
         )
 
-        # Narrative
         out["narrative"] = _narrative(
             question, rows, None, self.tables_info, self.client
         )
 
-        # Charts
         if rows:
             out["charts"] = pick_charts(rows, intents, question)
 
