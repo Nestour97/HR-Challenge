@@ -1,10 +1,12 @@
 """Tesla HR Intelligence — Generic Agent Core
 
 - Sanitises column names on load (to lower snake_case)
+- Applies canonical aliases so the LLM can find columns even if names differ
+- Works with CSV and Excel (multi-sheet) uploads
 - Passes EXACT column names prominently in every prompt
 - Retries SQL up to 2× with the error message fed back to LLM
-- Works with CSV and Excel (multi-sheet) uploads
 """
+
 from __future__ import annotations
 
 import os
@@ -13,6 +15,10 @@ import sqlite3
 from typing import Any, Dict, List
 
 import pandas as pd
+
+# ──────────────────────────────────────────────────────────────────────────────
+# LLM client setup
+# ──────────────────────────────────────────────────────────────────────────────
 
 try:
     from groq import Groq as _Client  # type: ignore
@@ -59,8 +65,8 @@ STRICT RULES:
 9. NEVER use CREATE / DROP / UPDATE / INSERT / DELETE.
 """
 
-RETRY_SYSTEM = """You are an expert SQLite analyst. The query below failed.
-Fix ONLY the error — do not change the logic.
+RETRY_SYSTEM = """You are an expert SQLite analyst.
+The query below failed. Fix ONLY the error — do not change the logic.
 
 {schema_block}
 
@@ -75,6 +81,7 @@ Output ONLY the corrected raw SQL. No markdown, no backticks, no explanation.
 
 NARRATIVE_SYSTEM = """You are a sharp data analyst.
 Write a 2-4 sentence insight.
+
 - Data found: lead with the key number or trend, name specific values.
 - Empty result: say filter matched nothing, suggest real values that exist.
 - Error: explain plainly in plain English — no SQL jargon.
@@ -107,6 +114,7 @@ def _sanitise_col(name: str) -> str:
 def sanitise_columns(df: pd.DataFrame) -> pd.DataFrame:
     mapping: Dict[str, str] = {}
     seen: Dict[str, int] = {}
+
     for col in df.columns:
         new = _sanitise_col(col)
         if new in seen:
@@ -115,6 +123,7 @@ def sanitise_columns(df: pd.DataFrame) -> pd.DataFrame:
         else:
             seen[new] = 0
         mapping[col] = new
+
     return df.rename(columns=mapping)
 
 
@@ -161,6 +170,7 @@ ALIASES: Dict[str, set] = {
 def apply_aliases(df: pd.DataFrame) -> pd.DataFrame:
     cols = set(df.columns)
     rename: Dict[str, str] = {}
+
     for canonical, variants in ALIASES.items():
         if canonical in cols:
             continue
@@ -169,6 +179,7 @@ def apply_aliases(df: pd.DataFrame) -> pd.DataFrame:
             rename[hit] = canonical
             cols.remove(hit)
             cols.add(canonical)
+
     return df.rename(columns=rename) if rename else df
 
 
@@ -314,6 +325,7 @@ def pick_charts(rows, intents, question: str = "") -> list[dict]:
             else:
                 add({"chart": "bar", "x": x, "y": y, "title": f"{ty} by {tx}"})
 
+    # Fallbacks if user didn’t specify explicit chart type
     if len(charts) < 2 and len(rows) >= 3:
         if "bar" not in used and txt:
             add({"chart": "bar", "x": x, "y": y, "title": f"{ty} by {tx}"})
@@ -334,7 +346,6 @@ def _infer_type(s: pd.Series) -> str:
     s = s.dropna()
     if s.empty:
         return "TEXT"
-
     if pd.api.types.is_bool_dtype(s):
         return "INTEGER"
     if pd.api.types.is_integer_dtype(s):
@@ -394,7 +405,7 @@ def _safe_sql(sql: str):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Schema block builder (the single most important thing for LLM accuracy)
+# Schema block builder
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -403,6 +414,7 @@ def _schema_block(tables_info: dict) -> str:
         return "No tables loaded.\nAsk user to upload a CSV or Excel file first."
 
     blocks: List[str] = []
+
     for tname, info in tables_info.items():
         lines = [
             f'TABLE NAME (use exactly): "{tname}"',
@@ -470,6 +482,7 @@ def _generate_code(question, sql, col_names, client) -> str:
         f"Question: {question}\n\nSQL:\n{sql}\n\n"
         f"DataFrame `df` columns: {col_str}\n\nWrite equivalent pandas code."
     )
+
     try:
         raw = _chat(
             client, CODE_SYSTEM, [{"role": "user", "content": msg}], max_tokens=500
@@ -536,7 +549,6 @@ def _parse_dates(series: pd.Series) -> pd.Series:
     )
     if parsed2.notna().mean() > parsed.notna().mean():
         return parsed2
-
     return parsed
 
 
@@ -552,7 +564,9 @@ def _load_dataframe(
 
     # 2. Table name from display_name
     base = os.path.splitext(os.path.basename(display_name))[0]
-    tname = re.sub(r"_+", "_", re.sub(r"[^a-zA-Z0-9]", "_", base)).strip("_") or "data"
+    tname = (
+        re.sub(r"_+", "_", re.sub(r"[^a-zA-Z0-9]", "_", base)).strip("_") or "data"
+    )
 
     # 3. Detect types
     col_types: Dict[str, str] = {}
@@ -613,13 +627,11 @@ def load_tabular(conn: sqlite3.Connection, display_name: str, file_path: str) ->
     """Load CSV or Excel into one or more SQLite tables.
 
     Returns:
-        {
-            "tables": [table_info, ...],
-            "rows_loaded": total_rows
-        }
+        {"tables": [table_info, ...], "rows_loaded": total_rows}
     """
     ext = os.path.splitext(file_path)[1].lower()
 
+    # Excel → one table per sheet
     if ext in (".xlsx", ".xls"):
         try:
             sheets = pd.read_excel(file_path, sheet_name=None)
@@ -704,7 +716,6 @@ def _detect_joins(conn: sqlite3.Connection, new_table: str, df: pd.DataFrame) ->
         for ot, oc in others.items():
             if ot == new_table or col not in oc:
                 continue
-
             ph = ",".join(["?"] * len(sample))
             try:
                 (m,) = conn.execute(
@@ -748,8 +759,10 @@ class DataAgent:
         self.conn = sqlite3.connect(":memory:", check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
 
-        key = api_key or os.environ.get("GROQ_API_KEY") or os.environ.get(
-            "OPENAI_API_KEY"
+        key = (
+            api_key
+            or os.environ.get("GROQ_API_KEY")
+            or os.environ.get("OPENAI_API_KEY")
         )
         if not key:
             raise RuntimeError("Set GROQ_API_KEY or OPENAI_API_KEY.")
@@ -778,16 +791,16 @@ class DataAgent:
     def upload_csv(self, display_name: str, file_path: str) -> dict:
         """Backward-compatible wrapper.
 
-        Historically this only worked for CSV; it now simply
-        delegates to `upload_file` and, if exactly one table is
-        created, returns the single-table dict like before.
+        Historically this only worked for CSV; it now simply delegates to
+        `upload_file` and, if exactly one table is created, returns the single-
+        table dict like before.
         """
         info = self.upload_file(display_name, file_path)
         if "error" in info:
             return info
 
-        tables = info.get("tables", [])
-        if len(tables) == 1:
+        tables = info.get("tables")
+        if isinstance(tables, list) and len(tables) == 1:
             return tables[0]
         return info
 
@@ -806,7 +819,7 @@ class DataAgent:
     def has_data(self) -> bool:
         return bool(self.tables_info)
 
-    # ── Main ask ───────────────────────────────────────────────────────
+    # ── Main ask ────────────────────────────────────────────────────────
 
     def ask(self, question: str) -> dict[str, Any]:
         out: dict[str, Any] = dict(
@@ -822,13 +835,13 @@ class DataAgent:
 
         if not self.tables_info:
             out["narrative"] = (
-                "No data loaded yet.\nPlease upload a CSV or Excel file from the sidebar."
+                "No data loaded yet. Upload a CSV or Excel file from the sidebar."
             )
             return out
 
         intents = detect_chart_intents(question)
 
-        # Generate + execute SQL, retry once on failure
+        # Generate + execute SQL
         sql = _generate_sql(question, self.history, self.client, self.tables_info)
         out["sql"] = sql
 
@@ -842,37 +855,42 @@ class DataAgent:
 
         rows, exec_error = self._run_sql(sql)
 
-        # Retry if execution failed
+        # Retry once on failure
         if exec_error:
             sql2 = _retry_sql(question, sql, exec_error, self.client, self.tables_info)
             rows2, exec_error2 = self._run_sql(sql2)
-
             if not exec_error2:
-                out["sql"] = sql2  # show the fixed SQL
+                out["sql"] = sql2
                 rows, exec_error = rows2, None
             else:
-                out["error"] = exec_error  # original error
-                out["narrative"] = _narrative(
-                    question, [], exec_error, self.tables_info, self.client
-                )
-                return out
+                out["error"] = exec_error
+
+        if exec_error:
+            out["narrative"] = _narrative(
+                question, [], exec_error, self.tables_info, self.client
+            )
+            return out
 
         out["rows"] = rows
 
         # Money columns
         if rows:
-            out["money_columns"] = [c for c in rows[0].keys() if _is_money(c)]
+            out["money_columns"] = [
+                c for c in rows[0].keys() if _is_money(c)
+            ]
 
         # Python code
         all_cols: List[str] = []
         for info in self.tables_info.values():
             all_cols.extend(info["columns"])
-        # dedupe while preserving order
-        dedup_cols = list(dict.fromkeys(all_cols))
-        out["code"] = _generate_code(question, out["sql"], dedup_cols, self.client)
+        out["code"] = _generate_code(
+            question, out["sql"], list(dict.fromkeys(all_cols)), self.client
+        )
 
         # Narrative
-        out["narrative"] = _narrative(question, rows, None, self.tables_info, self.client)
+        out["narrative"] = _narrative(
+            question, rows, None, self.tables_info, self.client
+        )
 
         # Charts
         if rows:
