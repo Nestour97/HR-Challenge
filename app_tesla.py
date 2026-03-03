@@ -332,14 +332,15 @@ div[data-testid="stFileUploader"] {{
 hr {{ border: none !important; border-top: 1px solid {LIGHT} !important; margin: 16px 0 !important; }}
 .stSpinner > div {{ border-top-color: {RED} !important; }}
 [data-testid="stChatInput"] > div {{
-    background: {WHITE} !important;
-    border: 1px solid {LIGHT} !important;
+    background: #171a20 !important;
+    border: 1px solid #2d3139 !important;
     border-bottom: 2px solid {RED} !important;
-    border-radius: 4px 4px 0 0 !important;
-    box-shadow: 0 -2px 12px rgba(0,0,0,0.05) !important;
+    border-radius: 8px !important;
+    box-shadow: 0 4px 20px rgba(0,0,0,.18) !important;
 }}
+[data-testid="stChatInput"] textarea::placeholder {{ color: #555 !important; }}
 [data-testid="stChatInput"] textarea {{
-    color: {DARK} !important;
+    color: #ffffff !important;
     font-family: 'Inter', sans-serif !important;
     background: transparent !important;
 }}
