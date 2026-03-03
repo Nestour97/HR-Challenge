@@ -496,9 +496,19 @@ with st.sidebar:
                 st.error(f"{f.name}: {r['error']}")
             else:
                 total = r.get("rows_loaded", 0)
-                st.success(f"✓ {f.name}: {total:,} rows loaded")
-                for t in r.get("tables", []):
-                    st.caption(f"  └ Table: `{t['table']}` ({t['rows_loaded']:,} rows)")
+                st.success(f"✓ {f.name}: {total:,} raw rows ingested")
+                cleaning = r.get("cleaning_summary", {})
+                if cleaning:
+                    lines = "<br>".join(
+                        f"<span style='margin-left:0.5rem'>└ <code style='background:none;color:#166534;font-family:monospace'>{k}</code>: {v}</span>"
+                        for k, v in cleaning.items()
+                    )
+                    st.markdown(
+                        f"""<div style='margin-top:0.4rem;padding:0.5rem 0.65rem;background:#f0faf4;
+                            border:1px solid #86efac;border-radius:5px;font-size:0.73rem;color:#166534;line-height:1.6;'>
+                            <strong>⚡ Auto-cleaned</strong><br>{lines}</div>""",
+                        unsafe_allow_html=True
+                    )
 
     # Loaded tables
     schema = agent.get_schema_summary()
@@ -556,12 +566,14 @@ with st.sidebar:
             examples = [
                 "How many females applied to each job level?",
                 "Show the hiring funnel by stage",
-                "What is the gender breakdown by ethnicity?",
+                "What % of applicants reach each stage?",
+                "Gender split for each stage as bar chart",
+                "How many total applications and hires?",
+                "Average days to hire by job level",
+                "Ethnicity breakdown as pie chart",
                 "Monthly application trend as line chart",
-                "Top 10 departments by total applicants",
-                "What % of applicants reach the offer stage?",
-                "Show ethnicity distribution as pie chart",
-                "How many applicants were hired by job level?",
+                "Top departments by number of hires",
+                "Compare male vs female hire rates",
             ]
             for ex in examples:
                 if st.button(ex, key=f"ex_{ex}", use_container_width=True):
