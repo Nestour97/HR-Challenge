@@ -423,14 +423,19 @@ def render_chart(rows, cfg, money_cols):
 
 # ── Load agent ─────────────────────────────────────────────────────────────────
 
-@st.cache_resource
-def load_agent():
+def _get_api_key():
     try:
-        api_key = st.secrets.get("GROQ_API_KEY") or st.secrets.get("OPENAI_API_KEY")
+        return st.secrets.get("GROQ_API_KEY") or st.secrets.get("OPENAI_API_KEY")
     except Exception:
-        api_key = None
-    api_key = api_key or os.environ.get("GROQ_API_KEY") or os.environ.get("OPENAI_API_KEY")
-    return DataAgent(api_key=api_key)
+        pass
+    return os.environ.get("GROQ_API_KEY") or os.environ.get("OPENAI_API_KEY")
+
+def load_agent():
+    """Load agent into session state so it never serves a stale cached object."""
+    if "_agent" not in st.session_state or not isinstance(st.session_state["_agent"], DataAgent):
+        api_key = _get_api_key()
+        st.session_state["_agent"] = DataAgent(api_key=api_key)
+    return st.session_state["_agent"]
 
 
 # ── Session state ──────────────────────────────────────────────────────────────
@@ -457,8 +462,12 @@ with st.sidebar:
 
     try:
         agent = load_agent()
+        # Verify the agent is a proper DataAgent instance
+        if not isinstance(agent, DataAgent):
+            st.session_state.pop("_agent", None)
+            agent = load_agent()
     except Exception as e:
-        st.error(f"Agent error: {e}")
+        st.error(f"Agent failed to start: {e}. Check your GROQ_API_KEY or OPENAI_API_KEY.")
         st.stop()
 
     # Upload section
@@ -490,7 +499,14 @@ with st.sidebar:
                 tmp.write(f.read())
                 tmp_path = tmp.name
             with st.spinner(f"Loading {f.name}..."):
-                r = agent.upload_file(Path(f.name).stem, tmp_path)
+                try:
+                    if not hasattr(agent, "upload_file"):
+                        # Stale cache — reload agent
+                        st.session_state.pop("_agent", None)
+                        agent = load_agent()
+                    r = agent.upload_file(Path(f.name).stem, tmp_path)
+                except Exception as upload_err:
+                    r = {"error": str(upload_err)}
             os.unlink(tmp_path)
             if "error" in r:
                 st.error(f"{f.name}: {r['error']}")
