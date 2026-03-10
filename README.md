@@ -1,4 +1,4 @@
-# ⚡ Tesla HR Intelligence
+# HR Intelligence
 
 > AI-powered HR analytics agent — ask questions in plain English, get SQL + Python code + charts.
 
@@ -39,7 +39,7 @@ How many unique applicants per year?
 ```
 tesla-hr-intelligence/
 │
-├── app_tesla.py          ← Streamlit UI (Tesla theme)
+├── app.py          ← Streamlit UI
 ├── agent_hr.py           ← AI agent core logic
 ├── Data_Challenge.csv    ← Your HR dataset
 ├── requirements.txt      ← Python dependencies
